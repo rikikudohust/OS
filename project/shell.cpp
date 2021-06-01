@@ -9,28 +9,41 @@
 #include <signal.h>
 #include <vector>
 
+#define MAXLINE 1024
+#define UNDEFINE 0
+#define FG 1
+#define BG 2
+#define STOP 3
 
 
 const std::string username = "Hieu";
-char input[500];
+char input[MAXLINE];
 std::vector<int> processid;
+int n = 0;
 int mark = 0;
 std::string cmd, argc;
+struct process_t {
+	pid_t pid;
+	int jid;
+	int status;
+	char cmdline[MAXLINE];
+};
 
+std::vector<struct process_t> processes;
 
 void takeInput();
 void help();
 void get_current_dir();
 void ls();
 void child();
-void lists();
+void list();
 void killchild(int id);
 void kill_all();
 void exit_process();
 
 void takeInput() {
     std::cout << " ";
-    std::cin.getline(input,500);
+    std::cin.getline(input,MAXLINE);
     if (input[0] != ' ') {
         int len = strlen(input);
         int i = 0;
@@ -96,14 +109,16 @@ void calc() {
 void kill_all() {
     for (size_t i = 0; i < processid.size(); ++i) {
         killchild(processid[i]);
-        processid.clear();
     }
+	processid.clear();
+	n = 0;
 }
 void killchild(int id) {
     for (size_t i = 0; i < processid.size(); ++i) {
         if (id == processid[i]) {
             kill(id, SIGKILL);
             processid.erase(processid.begin() + i);
+			n = processid.size();
         }
     }   
 }
@@ -114,6 +129,14 @@ void list() {
     }
 }
 
+void sigint(int a){   
+    printf("Killing foreground process ... \n");
+    for (size_t i = 0; i < processid.size(); ++i) {
+        killchild(processid[i]);
+    }
+    processid.clear();
+    n = 0;
+}
 int main() {
     while(1) {
         cmd = "";
@@ -147,5 +170,6 @@ int main() {
         } else if (!strcmp(cmd.c_str(),"cd")) {
             chdir(argc.c_str());
         }
+		signal(SIGINT, sigint);
     }
 }
