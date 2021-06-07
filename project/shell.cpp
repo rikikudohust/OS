@@ -1,4 +1,5 @@
 #include <iostream>
+#include <sched.h>
 #include <stdio.h>
 #include <cstdlib>
 #include <string>
@@ -9,93 +10,195 @@
 #include <signal.h>
 #include <vector>
 
+#define MAXPROCESS 10
 #define MAXLINE 1024
 #define UNDEFINE 0
 #define FG 1
 #define BG 2
 #define STOP 3
 
+using std::vector;
+using std::string;
+using std::cout;
 
-const std::string username = "Hieu";
+//{{{=========Global Variable=================
+const string username = "Hieu";
 char input[MAXLINE];
-std::vector<int> processid;
-int n = 0;
-int mark = 0;
-std::string cmd, argc;
-struct process_t {
+
+int n = 0;               // Amount of process
+int bg = 1;              // variable to check background mode
+int next_prc = 1;       // the next id process in list
+char** environ;
+struct pr_t {
 	pid_t pid;
 	int jid;
 	int status;
 	char cmdline[MAXLINE];
 };
-
-std::vector<struct process_t> processes;
+struct pr_t processes[MAXPROCESS];     // list of process
+int fg;
+typedef void handler_t(int);
+//}}}
 
 void takeInput();
 void help();
 void get_current_dir();
 void ls();
-void child();
 void list();
 void killchild(int id);
 void kill_all();
-void exit_process();
+void childSignalHandler(int signum);
+int getprocess(pid_t pid);
+int add_process(struct pr_t* process, pid_t pid, int status, char* cmdline);
 
+//{{{=========== Xu ly input ==========================
 void takeInput() {
     std::cout << " ";
     std::cin.getline(input,MAXLINE);
-    if (input[0] != ' ') {
-        int len = strlen(input);
-        int i = 0;
-        while (input[i] != ' ' && i < len) {
-            cmd += input[i];
-            i++;
-        }
-        while (input[i] == ' ' && i < len) {
-            ++i;
-        }
-        
-        while(input[i] != ' ' && i < len) {
-            argc += input[i];
-            ++i;
-        }
-    }
 }
-
+int parseline(char* cmd, char** argv) {
+	int i = 0;
+	char* p;
+	p = strtok(cmd," ");
+	while(p != NULL) {
+		argv[i] = p;
+		i++;
+		p = strtok(NULL," ");
+	}
+	return i;
+}
+//}}}
 void get_current_dir() {
-    char dir[500];
+    char dir[MAXLINE];
     getcwd(dir,sizeof(dir));
     std::cout << "\n"<<username << ":" << dir;
 }
+
+//{{{========== Huong dan su dung ==========
 void help() {
-    std::cout << "kill -1   ---- stop all running process\n";
-    std::cout << "kill 'id' ----stop running process\n";
-    std::cout << "ls        ----show all file and folder in current dir\n";
-    std::cout << "date      ---- show date and time\n";
-    std::cout << "child     ---- launch child program\n";
-    std::cout << "calc      ---- lauch calculate program";
-    std::cout << "list      ---- list all process\n";
-    std::cout << "cd        ---- Change current diractory\n";
-    std::cout << "clear     ---- clear screen\n";
+    std::cout << "kill -a		Stop all running process\n";
+    std::cout << "kill 'id'	Stop running process\n";
+    std::cout << "ls		Show all file and folder in current dir\n";
+    std::cout << "date		Show date and time\n";
+    std::cout << "calc		Lauch calculate program\n";
+    std::cout << "list		List all process\n";
+    std::cout << "cd		Change current diractory\n";
+    std::cout << "clear		Clear screen\n";
+    std::cout << "fg <filename>   Run program with foreground\n";
+    std::cout << "bg <filename>   Run program with background\n";
+	std::cout << "quit		Exit shell\n";
+}
+//}}}
+//{{{ Hien thi tat ca cac tien trinh con
+void list() {
+	for (int i = 0; i < MAXPROCESS; ++i) {
+		if (processes[i].pid != 0) {
+			if (processes[i].status == BG) {
+				printf("%s ","BG");
+			} else if (processes[i].status == STOP) {
+				printf("%s ","STOP ");
+			}
+			printf("[%d] %d %s\n", processes[i].jid, processes[i].pid, processes[i].cmdline);
+		}
+	}
 }
 
-void child() {
-     pid_t pid;
-     char *const parmList[] = {"./test", NULL};
-     if ((pid = fork()) == -1)
-        perror("fork() error");
-     else if (pid == 0) {
-        execvp("./test", parmList);
-        exit(0);
-     } else {
-         processid.push_back(pid);
-         mark = 1;
-     }
+//}}}
+//{{{========== Tao tien trinh con va xu ly ==========
+struct pr_t* getprocess(struct pr_t* process, pid_t pid) {
+	for (int i = 0; i < MAXPROCESS; i++) {
+		if (process[i].pid == pid) {
+			return &process[i];
+		}
+	}
+	return nullptr;
 }
 
-void calc() {
-     pid_t pid;
-     char *const parmList[] = {".//usr/bin/gnome-calculator", NULL};
+void execs(char** agrc, int bg) {
+	struct pr_t *processid;        //Creating an object of the structure
+    sigset_t set;               //Declaring a set 
+    sigemptyset(&set);          //Initializing it as empty
+    sigaddset(&set,SIGCHLD);    //Adding the SIGCHLD signal to the set 	
+
+	pid_t pid;
+	
+	sigprocmask(SIG_BLOCK,&set, NULL);
+	pid = fork();
+	if (pid == 0) {
+		sigprocmask(SIG_UNBLOCK,&set, NULL);  
+        setpgid(0,0);                          
+        if(execvp(agrc[0],agrc)<0) {   
+           printf("%s,Command not found", agrc[0]);
+           exit(1);
+        }
+	}
+	if (!bg) {
+		add_process(processes, pid, FG, agrc[0]);
+		waitpid(pid, NULL, 0);
+		return;
+	} else {
+		add_process(processes, pid, BG, agrc[0]);
+		printf("[%d] %d %s\n",next_prc - 1 , pid, agrc[0]);
+		sigprocmask(SIG_UNBLOCK, &set, NULL);
+	}
+}
+int add_process(struct pr_t* process, pid_t pid, int status, char* cmdline) {
+	if (pid < 1) {
+		return 0;
+	}
+	for (int i = 0; i < MAXPROCESS; ++i) {
+		if (process[i].pid == 0) {
+			process[i].pid = pid;
+			process[i].jid = next_prc++;
+			process[i].status = status;
+			if (next_prc > MAXPROCESS) {
+				next_prc = 1;
+			}
+			strcpy(process[i].cmdline, cmdline);
+			return 1;
+		}
+	}
+	return 0;
+}
+//}}}
+//{{{========== killprocess ==========
+void reset(struct pr_t* process) {
+	process->pid = 0;
+	process->status = UNDEFINE;
+	process->jid = 0;
+	process->cmdline[0] = '\0';
+}
+int killprocess(pid_t pid) {
+	for (int i = 0; i < MAXPROCESS; ++i) {
+		if (processes[i].pid == pid ) {
+			if (processes[i].status == STOP) {
+				kill(processes[i].pid,SIGCONT);
+			}
+			kill(-pid, SIGINT);
+			waitpid(pid,NULL, 0);
+			reset(&processes[i]);
+			return 1;
+		}
+	}
+	return 0;
+}
+void kill_all() {
+	for (int i = 0; i < MAXPROCESS; ++i) {
+		if (processes[i].pid > 0) {
+			if (processes[i].status == STOP) {
+				kill(processes[i].pid,SIGCONT);
+			}
+			kill(-processes[i].pid, SIGINT);
+			waitpid(processes[i].pid,NULL,0);
+			reset(&processes[i]);
+		}
+	}
+}
+//}}}
+//{{{========== Calculator foreground ==========
+void cal() {
+	pid_t pid;
+     char *const parmList[] = {"gnome-calculator", NULL};
      if ((pid = fork()) == -1)
         perror("fork() error");
      else if (pid == 0) {
@@ -105,71 +208,107 @@ void calc() {
          wait(NULL);
      }
 }
-
-void kill_all() {
-    for (size_t i = 0; i < processid.size(); ++i) {
-        killchild(processid[i]);
-    }
-	processid.clear();
-	n = 0;
+//}}}
+//{{{========== Xu ly tin hieu Ctrl + C ==========
+pid_t fgpid(struct pr_t *process) {
+    int i;
+	for (i = 0; i < MAXPROCESS; i++)
+	if (process[i].status == FG)
+	    return process[i].pid;
+    return 0;
 }
-void killchild(int id) {
-    for (size_t i = 0; i < processid.size(); ++i) {
-        if (id == processid[i]) {
-            kill(id, SIGKILL);
-            processid.erase(processid.begin() + i);
-			n = processid.size();
-        }
-    }   
+void sigint_handler(int sig)
+{
+    int pid = fgpid(processes);
+    if(pid!=0) killprocess(pid);                  //send sigint to the process group
+    return;
 }
 
-void list() {
-    for (size_t i = 0;  i < processid.size(); ++i) {
-        std::cout << processid[i] << std::endl;
-    }
+//}}}
+//{{{========== Stop and Restart process ==========
+int stop(pid_t pid) {
+	for (int i = 0; i < MAXPROCESS; ++i) {
+		if (processes[i].pid == pid) {
+			if (processes[i].status == BG) {
+				kill(pid,SIGSTOP);
+				processes[i].status = STOP;
+			}
+			return 1;
+		}
+	}
+	return 0;
 }
+int restart(pid_t pid) {
+	for (int i = 0; i < MAXPROCESS; ++i) {
+		if (processes[i].pid == pid) {
+			if (processes[i].status == STOP) {
+				kill(pid, SIGCONT);
+				processes[i].status = BG;
+			}
+			return 1;
+		}
+	}
+	return 0;
+}
+//}}}
 
-void sigint(int a){   
-    printf("Killing foreground process ... \n");
-    for (size_t i = 0; i < processid.size(); ++i) {
-        killchild(processid[i]);
-    }
-    processid.clear();
-    n = 0;
+//{{{==============Xu ly cau lenh========================
+void commandProcess(char* cmd) {
+	char* agrc[1024];
+	int agrv = parseline(cmd,agrc);
+	if (agrv == 1) {
+			if (!strcmp(input,"help")) {
+				help();
+			} else if (!strcmp(agrc[0],"clear")) {
+				system("clear");
+			} else if (!strcmp(agrc[0], "date")) {
+				system("date");
+			} else if (!strcmp(agrc[0],"ls")) {
+				system("ls");
+			} else if(!strcmp(agrc[0],"quit")) {
+				exit(0);
+			} else if(!strcmp(agrc[0],"list")) {
+				list();
+			} else if (!strcmp(agrc[0],"calc")) {
+				cal();
+			} else {
+				execs(agrc, 0);
+			}
+		} else if (agrv == 2) {
+			if (!strcmp(agrc[0],"cd")) {
+				chdir(agrc[1]);
+			} else if (!strcmp(agrc[0],"kill")) {
+				if (!strcmp(agrc[1],"-a")) {
+					kill_all();
+				} else {
+					int id = atoi(agrc[1]);
+					killprocess(id);
+				}
+			} else if (!strcmp(agrc[1],"&")) {
+				execs(agrc,1);
+			} else if (!strcmp(agrc[0],"stop")) {
+				int id = atoi(agrc[1]);
+				stop(id);
+			} else if (!strcmp(agrc[0],"restart")) {
+				int id = atoi(agrc[1]);
+				restart(id);
+			}
+		} else {
+			return;
+		}
 }
+//}}}
+//{{{================= Main===================
 int main() {
+	for (int i = 0; i < MAXPROCESS; ++i) {
+		reset(&processes[i]);
+	}
+	signal(SIGINT,  sigint_handler);
     while(1) {
-        cmd = "";
-        argc = "";
         get_current_dir();
         takeInput();
-        if (!strcmp(input,"help")) {
-            help();
-        } else if (!strcmp(cmd.c_str(),"clear")) {
-            system("clear");
-        } else if (!strcmp(cmd.c_str(), "date")) {
-            system("date");
-        } else if (!strcmp(cmd.c_str(),"ls")) {
-            system("ls");
-        } else if (!strcmp(cmd.c_str(),"calc")) {
-            calc();
-        } else if (!strcmp(cmd.c_str(),"child")) {
-            child();
-            if (mark == 1) {
-                continue;
-            }
-        } else if (!strcmp(cmd.c_str(),"kill")) {
-            if (!strcmp(argc.c_str(),"-a")) {
-                kill_all();
-            } else {
-                int id = atoi(argc.c_str());
-                killchild(id);
-            }
-        } else if (!strcmp(cmd.c_str(),"list")) {
-            list();
-        } else if (!strcmp(cmd.c_str(),"cd")) {
-            chdir(argc.c_str());
-        }
-		signal(SIGINT, sigint);
+		commandProcess(input);
     }
+	exit(0);
 }
+//}}

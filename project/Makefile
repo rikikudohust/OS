@@ -1,11 +1,14 @@
-all: test shell
+all: foreground shell background
 
-test: test.cpp
-	g++ -o test test.cpp
+foreground: foreground.cpp
+	clang++ -o foreground foreground.cpp
+
+background: background.cpp
+	clang++ -o background background.cpp 
 
 shell: shell.cpp
-	g++ -o shell shell.cpp
+	clang++ -o shell shell.cpp
 
 .PHONY: clean
 clean:
-	rm test shell
+	rm shell foreground background
